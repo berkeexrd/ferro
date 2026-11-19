@@ -671,6 +671,8 @@ impl App {
             self.toast(ToastKind::Err, "Depo bulunamadı ya da bu hesabın erişimi yok. Doğru hesapla giriş yaptığından emin ol.");
         } else if low.contains("permission to") && low.contains("denied") || low.contains("error: 403") {
             self.toasts.push(Toast { text: "Bu GitHub hesabının bu depoya yazma izni yok. Depo sahibi hesapla giriş yaptığından emin ol.".into(), kind: ToastKind::Err, at: Instant::now(), action: Some(("Hesaplar".into(), Cmd::Settings)) });
+        } else if low.contains("no tracking information") {
+            self.toast(ToastKind::Err, "Bu dal henüz bir uzak dala bağlı değil. Push yapınca bağlanır.");
         } else if low.contains("would be overwritten by checkout") || low.contains("please commit your changes or stash") {
             self.toast(ToastKind::Err, "Kaydedilmemiş değişikliklerin bu işlemle çakışıyor. Önce commit et ya da stash'le.");
         } else {
@@ -1426,10 +1428,24 @@ impl App {
         let progress = self.progress();
         let acc = self.account_key();
         let prev = stage::head_sha(&path);
+        let (branch, has_upstream) = self.repo.as_ref().and_then(|r| r.status.as_ref()).map(|st| (st.branch.clone(), st.upstream.is_some())).unwrap_or((None, true));
         self.sync_label = Some("Pull");
         self.sync_text.clear();
         self.spawn(
-            move || remote::pull(&progress, path, "merge".into(), acc),
+            move || {
+                if !has_upstream {
+                    // a branch that never pushed has no tracking info: link it to origin/<branch> when that exists
+                    let Some(b) = branch else { return Err("Bu dal henüz bir uzak dala bağlı değil".to_string()) };
+                    remote::fetch(&progress, path.clone(), Some("origin".into()), acc.clone())?;
+                    let remote_ref = format!("origin/{b}");
+                    let exists = git::run(&path, &["rev-parse", "--verify", "-q", &remote_ref]).map(|o| o.ok).unwrap_or(false);
+                    if !exists {
+                        return Err("Bu dal henüz GitHub'da yok. Önce Push ile yayınla.".to_string());
+                    }
+                    git::ok(&path, &["branch", &format!("--set-upstream-to={remote_ref}"), &b])?;
+                }
+                remote::pull(&progress, path, "merge".into(), acc)
+            },
             move |app, r| {
                 app.sync_label = None;
                 match r {
