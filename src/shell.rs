@@ -166,6 +166,7 @@ impl eframe::App for AppShell {
         shortcuts(app, ctx);
         resize_edges(ctx);
 
+        crate::overlay::clear_hover(ctx);
         crate::chrome::title_bar(app, ctx);
         crate::chrome::status_bar(app, ctx);
         if app.repo.is_some() {
@@ -185,6 +186,7 @@ impl eframe::App for AppShell {
                 Screen::Pr => crate::screens::pr::show(app, ui),
             }
         });
+        crate::overlay::frame_copy(app, ctx);
         crate::screens::changes::sync_commit_fields(app, ctx);
         if let Some(r) = app.repo.as_mut() {
             r.scroll_req = false;

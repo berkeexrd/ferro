@@ -337,7 +337,7 @@ pub fn gcm_accounts(host: &str) -> Vec<String> {
 /// Browser sign-in through Git Credential Manager. Blocks until the user finishes (or `pid_slot` is killed).
 pub fn gcm_login(host: &str, pid_slot: &std::sync::Mutex<Option<u32>>) -> Result<(), String> {
     use std::process::Stdio;
-    let mut args: Vec<String> = vec!["credential-manager".into(), "github".into(), "login".into(), "--browser".into()];
+    let mut args: Vec<String> = vec!["credential-manager".into(), "github".into(), "login".into(), "--browser".into(), "--force".into()];
     args.extend(gcm_url_args(host));
     let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let mut cmd = plain_git(&refs);

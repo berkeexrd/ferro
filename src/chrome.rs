@@ -128,7 +128,9 @@ pub fn title_bar(app: &mut App, ctx: &egui::Context) {
                 }
                 if app.repo.is_some() {
                     let st = app.repo.as_ref().and_then(|r| r.status.clone());
+                    let no_remote = app.repo.as_ref().map(|r| r.remotes_loaded && r.remotes.is_empty()).unwrap_or(false);
                     let (label, icon, count, cmd) = match &st {
+                        _ if no_remote => ("Depoyu yayınla".to_string(), Icon::Up, None, Cmd::PublishRepo),
                         Some(s) if s.upstream.is_none() && s.branch.is_some() => ("Branch'i yayınla".to_string(), Icon::Up, None, Cmd::Push),
                         Some(s) if s.ahead > 0 => ("Push origin".into(), Icon::Up, Some(s.ahead.to_string()), Cmd::Push),
                         Some(s) if s.behind > 0 => ("Pull origin".into(), Icon::Down, Some(s.behind.to_string()), Cmd::Pull),

@@ -17,6 +17,8 @@ const HEAD_H: f32 = 32.0;
 enum Act {
     Select(String),
     ToggleFile(Entry),
+    StageFiles(Vec<String>),
+    UnstageFiles(Vec<String>),
     Filter(usize),
     LineToggle(Block, usize, bool),
     StageSel(Block),
@@ -49,6 +51,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         match a {
             Act::Select(f) => app.select_file(f),
             Act::ToggleFile(e) => app.toggle_file(&e),
+            Act::StageFiles(files) => app.stage_files(files),
+            Act::UnstageFiles(files) => app.unstage_files(files),
             Act::Filter(f) => {
                 if let Some(r) = app.repo.as_mut() {
                     r.filter = f;
@@ -182,7 +186,6 @@ fn side(app: &App, ui: &mut Ui, rect: Rect, acts: &mut Vec<Act>) {
     let co_h = if r.coauthor_open { 44.0 } else { 0.0 };
     let box_h = 14.0 + 34.0 + 10.0 + 70.0 + 10.0 + 26.0 + co_h + 10.0 + 38.0 + 14.0;
     let box_rect = Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - box_h), Pos2::new(rect.right() - 1.0, rect.bottom()));
-    let list_rect = Rect::from_min_max(Pos2::new(rect.left() + 6.0, head.bottom()), Pos2::new(rect.right() - 7.0, box_rect.top()));
 
     let visible: Vec<&Entry> = entries
         .iter()
@@ -193,6 +196,12 @@ fn side(app: &App, ui: &mut Ui, rect: Rect, acts: &mut Vec<Act>) {
             _ => true,
         })
         .collect();
+    let list_top = if !visible.is_empty() && box_rect.top() > head.bottom() + 32.0 {
+        select_all_bar(app, ui, Rect::from_min_max(Pos2::new(rect.left() + 6.0, head.bottom()), Pos2::new(rect.right() - 7.0, head.bottom() + 28.0)), rect, &visible, acts)
+    } else {
+        head.bottom()
+    };
+    let list_rect = Rect::from_min_max(Pos2::new(rect.left() + 6.0, list_top), Pos2::new(rect.right() - 7.0, box_rect.top()));
     let mut lui = ui.new_child(UiBuilder::new().max_rect(list_rect).layout(Layout::top_down(Align::Min)));
     if visible.is_empty() {
         empty_list(app, &mut lui, list_rect, n_all == 0);
@@ -210,6 +219,56 @@ fn side(app: &App, ui: &mut Ui, rect: Rect, acts: &mut Vec<Act>) {
     let bx = Rect::from_min_max(box_rect.min + vec2(14.0, 14.0), box_rect.max - vec2(14.0, 14.0));
     let mut cui = ui.new_child(UiBuilder::new().max_rect(bx).layout(Layout::top_down(Align::Min)));
     commit_box(app, &mut cui, acts);
+}
+
+fn collect_paths(entries: &[&Entry], pred: impl Fn(&Entry) -> bool) -> Vec<String> {
+    let mut out = Vec::new();
+    for e in entries {
+        if pred(e) {
+            out.push(e.path.clone());
+            if let Some(o) = &e.orig_path {
+                out.push(o.clone());
+            }
+        }
+    }
+    out
+}
+
+fn select_all_bar(app: &App, ui: &mut Ui, bar_rect: Rect, side_rect: Rect, visible: &[&Entry], acts: &mut Vec<Act>) -> f32 {
+    let p = &app.th.p;
+    let n_vis = visible.len();
+    let vis_staged_full = visible.iter().filter(|e| { let (st, un) = staged_flags(e); st && !un }).count();
+    let vis_staged_any = visible.iter().filter(|e| staged_flags(e).0).count();
+    let all_staged = vis_staged_full == n_vis;
+    let state = if all_staged { Cb::On } else if vis_staged_any > 0 { Cb::Partial } else { Cb::Off };
+
+    let resp = ui.interact(bar_rect, Id::new("changes-select-all"), Sense::click());
+    let painter = ui.painter();
+    if resp.hovered() {
+        painter.rect_filled(bar_rect.shrink2(vec2(0.0, 1.0)), cr(6), p.bg3);
+    }
+    let cb = Rect::from_center_size(Pos2::new(bar_rect.left() + 8.0 + 7.5, bar_rect.center().y), vec2(15.0, 15.0));
+    paint_checkbox(ui, &app.th, cb, state, resp.hovered());
+    pointer(&resp);
+    let label = if all_staged { "Hazırlananları geri çek" } else { "Tümünü hazırla" };
+    draw_left(painter, cb.right() + 8.0, bar_rect.center().y, label, FontId::new(12.0, semibold()), if resp.hovered() { p.text1 } else { p.text2 });
+    draw_right(painter, bar_rect.right() - 8.0, bar_rect.center().y, &format!("{vis_staged_full}/{n_vis}"), app.th.f(Ty::MonoXs), p.text3);
+    hline(painter, side_rect.left(), side_rect.right() - 1.0, bar_rect.bottom() + 2.0, p.line_soft);
+
+    if resp.clicked() {
+        if all_staged {
+            let files = collect_paths(visible, |e| staged_flags(e).0);
+            if !files.is_empty() {
+                acts.push(Act::UnstageFiles(files));
+            }
+        } else {
+            let files = collect_paths(visible, |e| { let (st, un) = staged_flags(e); !st || un });
+            if !files.is_empty() {
+                acts.push(Act::StageFiles(files));
+            }
+        }
+    }
+    bar_rect.bottom() + 6.0
 }
 
 fn empty_list(app: &App, ui: &mut Ui, rect: Rect, clean: bool) {
@@ -594,7 +653,14 @@ fn diff_view(app: &App, ui: &mut Ui, fv: &FileView, acts: &mut Vec<Act>) {
             let b = fv.blocks[bi];
             let h = fv.hunk(b);
             let l = &h.lines[li];
-                                let bg = match l.kind {
+            let row = ui.interact(rr, Id::new(("dl", bi, li, mode)), Sense::click());
+            if row.hovered() {
+                crate::overlay::hover_copy(ui.ctx(), l.text.clone());
+            }
+            if row.secondary_clicked() {
+                crate::overlay::request_copy_menu(ui.ctx(), crate::overlay::CopyReq { pos: row.interact_pointer_pos().unwrap_or(rr.center()), line: l.text.clone(), hunk: hunk_text(h), file: fv.path.clone(), sel: selected_text_of(r, fv) });
+            }
+            let bg = match l.kind {
                 LineKind::Add => p.diff_add,
                 LineKind::Del => p.diff_del,
                 LineKind::Ctx => Color32::TRANSPARENT,
@@ -748,4 +814,44 @@ fn diff_view(app: &App, ui: &mut Ui, fv: &FileView, acts: &mut Vec<Act>) {
             }
         }
     });
+}
+
+/// A hunk as unified-diff text (header plus +/-/space prefixed lines).
+pub fn hunk_text(h: &crate::diff::Hunk) -> String {
+    let mut out = format!("@@ -{},{} +{},{} @@", h.old_start, h.old_lines, h.new_start, h.new_lines);
+    if !h.section.is_empty() {
+        out.push(' ');
+        out.push_str(&h.section);
+    }
+    out.push('\n');
+    for l in &h.lines {
+        out.push(match l.kind {
+            LineKind::Add => '+',
+            LineKind::Del => '-',
+            LineKind::Ctx => ' ',
+        });
+        out.push_str(&l.text);
+        out.push('\n');
+    }
+    out
+}
+
+fn selected_text_of(r: &Repo, fv: &FileView) -> String {
+    let mut keys: Vec<&(bool, usize, usize)> = r.line_sel.iter().collect();
+    keys.sort();
+    keys.iter()
+        .filter_map(|(staged, hunk, line)| {
+            let h = if *staged { fv.staged.hunks.get(*hunk) } else { fv.unstaged.hunks.get(*hunk) }?;
+            h.lines.get(*line).map(|l| l.text.clone())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Lines ticked in the diff, as plain text (empty when nothing is selected).
+pub fn selected_text(app: &App) -> String {
+    match app.repo.as_ref().and_then(|r| r.file_view.as_ref().map(|fv| (r, fv))) {
+        Some((r, fv)) => selected_text_of(r, fv),
+        None => String::new(),
+    }
 }

@@ -453,20 +453,38 @@ fn login_start_gcm(app: &mut App) {
     let host = "github.com".to_string();
     app.spawn(
         move || -> Result<Vec<Acc>, String> {
-            let before = crate::backend::git::gcm_accounts(&host);
+            let snapshot = |host: &str| -> Vec<(String, Option<String>)> {
+                crate::backend::git::gcm_accounts(host)
+                    .into_iter()
+                    .map(|login| {
+                        let key = format!("{host}|{login}");
+                        crate::backend::git::forget_cached(&key);
+                        let t = crate::backend::git::token_for(&key);
+                        (login, t)
+                    })
+                    .collect()
+            };
+            let before = snapshot(&host);
             crate::backend::git::gcm_login(&host, &pid)?;
             if cancel.load(Ordering::Relaxed) {
                 return Err(String::new());
             }
-            let after = crate::backend::git::gcm_accounts(&host);
-            let mut fresh: Vec<String> = after.iter().filter(|a| !before.contains(a)).cloned().collect();
+            let after = snapshot(&host);
+            // the account that was just signed in is the new one, or the one whose token was renewed
+            let fresh: Vec<String> = after
+                .iter()
+                .filter(|(login, token)| match before.iter().find(|(l, _)| l == login) {
+                    None => true,
+                    Some((_, old)) => old != token,
+                })
+                .map(|(l, _)| l.clone())
+                .collect();
             if fresh.is_empty() {
-                fresh = after;
+                return Err("Tarayıcıda zaten bağlı olan bir hesapla giriş yapıldı; yeni hesap eklenmedi. Başka bir hesap için önce GitHub'da o hesaba geç (ya da gizli pencerede giriş yap) ve tekrar dene.".into());
             }
             let mut out = vec![];
-            for login in fresh {
+            for login in fresh.into_iter().take(1) {
                 let key = format!("{host}|{login}");
-                crate::backend::git::forget_cached(&key);
                 let token = crate::backend::git::token_for(&key).ok_or_else(|| "Hesap bulundu ama erişim anahtarı okunamadı".to_string())?;
                 let v = github::gh_whoami(host.clone(), token)?;
                 out.push(Acc { key, host: host.clone(), login: v["login"].as_str().unwrap_or(&login).into(), name: v["name"].as_str().unwrap_or("").into() });
