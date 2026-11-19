@@ -258,11 +258,109 @@ pub fn show_modal(app: &mut App, ctx: &egui::Context) {
         Modal::Settings(_) => {
             keep = crate::screens::settings::show(app, ctx, &mut modal);
         }
+        Modal::Publish { name, desc, private, acc } => {
+            let mut go = false;
+            let (_, close) = dialog(app, ctx, "publish", 460.0, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                ui.label(crate::i18n::rt("Depoyu GitHub'da yayınla").font(FontId::new(16.0, semibold())).color(app.th.p.text1));
+                ui.label(crate::i18n::rt("Depo GitHub hesabında oluşturulur ve geçerli dal gönderilir.").font(app.th.f(Ty::Row)).color(app.th.p.text2));
+                ui.add_space(4.0);
+                let nr = text_input(ui, &app.th, name, InputOpts::new(Id::new("pub-name"), "depo-adi").mono());
+                if ui.memory(|m| m.focused().is_none()) {
+                    nr.request_focus();
+                }
+                if nr.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    go = true;
+                }
+                text_input(ui, &app.th, desc, InputOpts::new(Id::new("pub-desc"), "Açıklama (isteğe bağlı)"));
+                if app.s.accounts.len() > 1 {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        ui.label(crate::i18n::rt("Hesap").font(app.th.f(Ty::Row)).color(app.th.p.text2));
+                        for a in &app.s.accounts {
+                            if pill(ui, &app.th, &format!("@{}", a.login), *acc == a.key).clicked() {
+                                *acc = a.key.clone();
+                            }
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if checkbox(ui, &app.th, if *private { Cb::On } else { Cb::Off }).clicked() {
+                        *private = !*private;
+                    }
+                    ui.label(crate::i18n::rt("Özel depo").font(app.th.f(Ty::Row)).color(app.th.p.text1));
+                });
+                ui.add_space(6.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if button(ui, &app.th, Btn::new("Yayınla").primary().enabled(!name.trim().is_empty())).clicked() {
+                        go = true;
+                    }
+                    if button(ui, &app.th, Btn::new("Vazgeç").ghost()).clicked() {
+                        ui.ctx().memory_mut(|m| m.data.insert_temp(Id::new("modal-cancel"), true));
+                    }
+                });
+            });
+            let cancel = ctx.memory_mut(|m| m.data.remove_temp::<bool>(Id::new("modal-cancel"))).unwrap_or(false);
+            if go && !name.trim().is_empty() {
+                keep = false;
+                app.publish_repo(name.trim().replace(' ', "-"), desc.trim().to_string(), *private, acc.clone());
+            } else if close || cancel {
+                keep = false;
+            }
+        }
         Modal::Login => {
             keep = crate::screens::welcome::login_modal(app, ctx);
         }
     }
     if keep && app.modal.is_none() {
         app.modal = Some(modal);
+    }
+}
+
+/// A right-click on a diff row: what can be copied from it.
+#[derive(Clone, Default)]
+pub struct CopyReq {
+    pub pos: eframe::egui::Pos2,
+    pub line: String,
+    pub hunk: String,
+    pub file: String,
+    pub sel: String,
+}
+
+pub fn request_copy_menu(ctx: &egui::Context, req: CopyReq) {
+    ctx.data_mut(|d| d.insert_temp(Id::new("copy-req"), req));
+}
+
+/// Text under the pointer in the current frame, used by Ctrl+C when nothing is selected.
+pub fn hover_copy(ctx: &egui::Context, text: String) {
+    ctx.data_mut(|d| d.insert_temp(Id::new("hover-copy"), text));
+}
+
+pub fn clear_hover(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove_temp::<String>(Id::new("hover-copy")));
+}
+
+/// Opens the copy menu requested by a diff row and handles Ctrl+C over the diff.
+pub fn frame_copy(app: &mut App, ctx: &egui::Context) {
+    if let Some(req) = ctx.data_mut(|d| d.remove_temp::<CopyReq>(Id::new("copy-req"))) {
+        let mk = |label: &str, icon: Icon, cmd: Cmd| MenuItem { label: label.into(), icon: Some(icon), kbd: None, cmd, danger: false, enabled: true };
+        let mut items = vec![];
+        if !req.sel.is_empty() {
+            items.push(mk("Seçili satırları kopyala", Icon::Copy, Cmd::CopyText(req.sel.clone())));
+        }
+        items.push(mk("Satırı kopyala", Icon::Copy, Cmd::CopyText(req.line)));
+        items.push(mk("Hunk'ı kopyala", Icon::Diff, Cmd::CopyText(req.hunk)));
+        items.push(mk("Yolu kopyala", Icon::Link, Cmd::CopyPath(req.file)));
+        app.menu = Some(Menu { pos: req.pos, right_align: false, items });
+    }
+    let copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+    if copy && !ctx.wants_keyboard_input() {
+        let sel = if app.screen == Screen::Changes { crate::screens::changes::selected_text(app) } else { String::new() };
+        let text = if sel.is_empty() { ctx.data_mut(|d| d.get_temp::<String>(Id::new("hover-copy"))).unwrap_or_default() } else { sel };
+        if !text.is_empty() {
+            ctx.copy_text(text);
+            app.toast(ToastKind::Info, "Kopyalandı");
+        }
     }
 }

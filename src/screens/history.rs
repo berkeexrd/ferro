@@ -432,6 +432,13 @@ pub fn readonly_diff(app: &App, ui: &mut Ui, area: Rect, fd: &FileDiff, file: &s
                 RK::Line(hi, li) => {
                     let l = &fd.hunks[*hi].lines[*li];
                     let rr = Rect::from_min_size(Pos2::new(o.x, o.y + ry), vec2(w, 22.0));
+                    let row = ui.interact(rr, Id::new(("rl", *hi, *li)), Sense::click());
+                    if row.hovered() {
+                        crate::overlay::hover_copy(ui.ctx(), l.text.clone());
+                    }
+                    if row.secondary_clicked() {
+                        crate::overlay::request_copy_menu(ui.ctx(), crate::overlay::CopyReq { pos: row.interact_pointer_pos().unwrap_or(rr.center()), line: l.text.clone(), hunk: crate::screens::changes::hunk_text(&fd.hunks[*hi]), file: file.to_string(), sel: String::new() });
+                    }
                     match l.kind {
                         LineKind::Add => {
                             painter.rect_filled(rr, 0.0, p.diff_add);

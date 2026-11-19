@@ -140,6 +140,8 @@ pub enum Cmd {
     DeleteBranch(String),
     Redo,
     UndoTo(usize),
+    PublishRepo,
+    CopyText(String),
 }
 
 impl Cmd {
@@ -192,6 +194,8 @@ impl Cmd {
             Cmd::MergeInto(b) => format!("Birleştir: {b}"),
             Cmd::DeleteBranch(b) => format!("Dalı sil: {b}"),
             Cmd::Redo => "Yinele".into(),
+            Cmd::PublishRepo => "Depoyu GitHub'da yayınla".into(),
+            Cmd::CopyText(_) => "Kopyala".into(),
             Cmd::UndoTo(_) => "Bu noktaya dön".into(),
             Cmd::CopyPath(f) => format!("Yolu kopyala: {f}"),
         }
@@ -241,6 +245,7 @@ impl Cmd {
             Cmd::StashPop(n) => format!("git stash pop {n}"),
             Cmd::DiscardFile(f) => format!("git checkout HEAD -- {f}"),
             Cmd::Undo => "git reset --soft ‹önceki›".into(),
+            Cmd::PublishRepo => "POST /user/repos · git push -u origin".into(),
             _ => return None,
         })
     }
@@ -291,6 +296,7 @@ pub struct Repo {
     pub stashes: Vec<repo::StashEntry>,
     pub tags: Vec<repo::Tag>,
     pub meta: Option<repo::RepoMeta>,
+    pub remotes_loaded: bool,
     pub unpushed: HashSet<String>,
     pub gh: Option<(String, String)>,
     pub sel_file: Option<String>,
@@ -343,6 +349,7 @@ impl Repo {
             stashes: vec![],
             tags: vec![],
             meta: None,
+            remotes_loaded: false,
             unpushed: HashSet::new(),
             gh: None,
             sel_file: None,
@@ -490,6 +497,7 @@ pub enum Modal {
     NewBranch(String),
     Login,
     FromCommit { sha: String, name: String, tag: bool },
+    Publish { name: String, desc: String, private: bool, acc: String },
 }
 
 pub struct MenuItem {
@@ -866,7 +874,23 @@ impl App {
                     app.save_settings();
                     app.refresh_all();
                 }
-                Err(e) => app.toast(ToastKind::Err, e),
+                Err(e) => {
+                    if e.contains("Git deposu değil") {
+                        let dir = path.clone();
+                        app.confirm("Bu klasör bir Git deposu değil", "Burada yeni bir depo oluşturulsun mu? (git init)", "Depo oluştur", false, move |app| {
+                            let d = dir.clone();
+                            app.spawn_busy(
+                                move || repo::init_repo(d, "main".into()),
+                                move |app, r| match r {
+                                    Ok(()) => app.open_repo(dir),
+                                    Err(e) => app.toast(ToastKind::Err, e),
+                                },
+                            );
+                        });
+                    } else {
+                        app.toast(ToastKind::Err, e);
+                    }
+                }
             },
         );
     }
@@ -912,6 +936,7 @@ impl App {
                         .or(rem.first())
                         .and_then(|x| parse_github(&x.url, acc.as_ref().map(|a| a.host.as_str()).unwrap_or("github.com")));
                     r.remotes = rem;
+                    r.remotes_loaded = true;
                 }
                 if let Ok(st) = st {
                     r.stashes = st;
@@ -1394,7 +1419,7 @@ impl App {
             return;
         }
         if r.remotes.is_empty() {
-            self.toast(ToastKind::Err, "Bu depoda uzak depo yok");
+            self.run(Cmd::PublishRepo);
             return;
         }
         let path = r.path.clone();
@@ -1419,6 +1444,44 @@ impl App {
                     Ok(()) => {
                         app.log_op(if force { "Force push" } else { "Push origin" }, if force { "git push --force-with-lease" } else { "git push" }, Undo::None("uzağa gönderildi, geri alınmaz"));
                         app.toast(ToastKind::Ok, "Değişiklikler gönderildi");
+                        app.refresh_all();
+                    }
+                    Err(e) => app.toast(ToastKind::Err, e),
+                }
+            },
+        );
+    }
+
+    /// Creates the repository on GitHub, adds it as `origin` and pushes the current branch.
+    pub fn publish_repo(&mut self, name: String, desc: String, private: bool, acc: String) {
+        let Some(r) = self.repo.as_ref() else { return };
+        let path = r.path.clone();
+        let branch = r.status.as_ref().and_then(|s| s.branch.clone());
+        let has_commits = r.status.as_ref().map(|s| s.has_commits).unwrap_or(false);
+        let progress = self.progress();
+        self.sync_label = Some("Yayın");
+        self.sync_text.clear();
+        self.spawn(
+            move || -> Result<bool, String> {
+                let body = serde_json::json!({ "name": name, "description": desc, "private": private });
+                let v = github::gh_api(acc.clone(), "POST".into(), "/user/repos".into(), Some(body), None)?;
+                let url = v["clone_url"].as_str().ok_or_else(|| "GitHub yanıtında depo adresi yok".to_string())?.to_string();
+                remote::set_remote(path.clone(), "origin".into(), url)?;
+                if has_commits {
+                    remote::push(&progress, path, Some("origin".into()), branch, false, true, Some(acc))?;
+                }
+                Ok(has_commits)
+            },
+            |app, r| {
+                app.sync_label = None;
+                match r {
+                    Ok(true) => {
+                        app.log_op("Depo yayınlandı", "git push -u origin", Undo::None("uzağa gönderildi, geri alınmaz"));
+                        app.toast(ToastKind::Ok, "Depo yayınlandı");
+                        app.refresh_all();
+                    }
+                    Ok(false) => {
+                        app.toast(ToastKind::Ok, "Depo oluşturuldu; ilk commit'ten sonra Push'la");
                         app.refresh_all();
                     }
                     Err(e) => app.toast(ToastKind::Err, e),
@@ -1974,6 +2037,20 @@ impl App {
             Cmd::OpenRecent(p) => self.open_repo(p),
             Cmd::CommitOp(k, sha) => self.commit_op(&k, sha),
             Cmd::Redo => self.redo(),
+            Cmd::PublishRepo => {
+                if self.s.account.is_none() {
+                    self.toast(ToastKind::Info, "Önce GitHub'a giriş yap");
+                    crate::screens::welcome::login_start(self);
+                } else if let Some(r) = self.repo.as_ref() {
+                    let name: String = r.name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '-' }).collect();
+                    let acc = self.account_key().unwrap_or_default();
+                    self.modal = Some(Modal::Publish { name, desc: String::new(), private: true, acc });
+                }
+            }
+            Cmd::CopyText(t) => {
+                self.ctx.copy_text(t);
+                self.toast(ToastKind::Info, "Kopyalandı");
+            }
             Cmd::UndoTo(n) => self.undo_n(n),
             Cmd::SelectFile(f) => {
                 self.screen = Screen::Changes;

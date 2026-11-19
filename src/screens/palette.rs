@@ -39,7 +39,7 @@ fn palette_items(app: &App, q: &str) -> Vec<Item> {
     let has_repo = app.repo.is_some();
     let cmd_icon = |c: &Cmd| match c {
         Cmd::Commit | Cmd::CommitPush => Icon::Commit,
-        Cmd::Push | Cmd::ForcePush => Icon::Up,
+        Cmd::Push | Cmd::ForcePush | Cmd::PublishRepo => Icon::Up,
         Cmd::Pull => Icon::Down,
         Cmd::Fetch | Cmd::Refresh => Icon::Sync,
         Cmd::Undo => Icon::Undo,
@@ -59,7 +59,7 @@ fn palette_items(app: &App, q: &str) -> Vec<Item> {
     };
     let mut cmds: Vec<Cmd> = vec![];
     if has_repo {
-        cmds.extend([Cmd::Commit, Cmd::CommitPush, Cmd::Push, Cmd::Pull, Cmd::Fetch, Cmd::Undo, Cmd::Redo, Cmd::NewBranch, Cmd::Switcher, Cmd::StageAll, Cmd::UnstageAll, Cmd::StashAll, Cmd::ToggleAmend, Cmd::Goto(Screen::Changes), Cmd::Goto(Screen::History), Cmd::Goto(Screen::Branches), Cmd::Goto(Screen::Pr), Cmd::Goto(Screen::Stash), Cmd::Goto(Screen::Log), Cmd::OpenEditor, Cmd::OpenTerminal, Cmd::Reveal, Cmd::Refresh, Cmd::ForcePush, Cmd::CopyCommand, Cmd::CloseRepo]);
+        cmds.extend([Cmd::Commit, Cmd::CommitPush, Cmd::Push, Cmd::PublishRepo, Cmd::Pull, Cmd::Fetch, Cmd::Undo, Cmd::Redo, Cmd::NewBranch, Cmd::Switcher, Cmd::StageAll, Cmd::UnstageAll, Cmd::StashAll, Cmd::ToggleAmend, Cmd::Goto(Screen::Changes), Cmd::Goto(Screen::History), Cmd::Goto(Screen::Branches), Cmd::Goto(Screen::Pr), Cmd::Goto(Screen::Stash), Cmd::Goto(Screen::Log), Cmd::OpenEditor, Cmd::OpenTerminal, Cmd::Reveal, Cmd::Refresh, Cmd::ForcePush, Cmd::CopyCommand, Cmd::CloseRepo]);
     }
     cmds.extend([Cmd::OpenFolder, Cmd::CloneRepo, Cmd::NewRepo, Cmd::Settings, Cmd::ToggleTheme]);
     for c in cmds {

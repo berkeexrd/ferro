@@ -420,16 +420,24 @@ pub fn text_input(ui: &mut Ui, th: &Theme, text: &mut String, o: InputOpts) -> R
     bg_painter.rect_filled(outer, cr(6), p.bg0);
     let mut child = ui.new_child(UiBuilder::new().max_rect(inner).layout(Layout::left_to_right(Align::Center)));
     let resp = if rows.is_some() {
-        child.add(
-            egui::TextEdit::multiline(text)
-                .id(o.id)
-                .hint_text(crate::i18n::rt(o.hint).color(p.text3).font(font.clone()))
-                .font(font)
-                .frame(false)
-                .desired_width(inner.width())
-                .desired_rows(rows.unwrap())
-                .text_color(p.text1),
-        )
+        child.set_clip_rect(inner.expand2(vec2(4.0, 0.0)));
+        egui::ScrollArea::vertical()
+            .id_salt(("ml", o.id))
+            .max_height(inner.height())
+            .auto_shrink([false, false])
+            .show(&mut child, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(text)
+                        .id(o.id)
+                        .hint_text(crate::i18n::rt(o.hint).color(p.text3).font(font.clone()))
+                        .font(font)
+                        .frame(false)
+                        .desired_width(inner.width() - 8.0)
+                        .desired_rows(rows.unwrap())
+                        .text_color(p.text1),
+                )
+            })
+            .inner
     } else {
         child.add(
             egui::TextEdit::singleline(text)

@@ -653,7 +653,14 @@ fn diff_view(app: &App, ui: &mut Ui, fv: &FileView, acts: &mut Vec<Act>) {
             let b = fv.blocks[bi];
             let h = fv.hunk(b);
             let l = &h.lines[li];
-                                let bg = match l.kind {
+            let row = ui.interact(rr, Id::new(("dl", bi, li, mode)), Sense::click());
+            if row.hovered() {
+                crate::overlay::hover_copy(ui.ctx(), l.text.clone());
+            }
+            if row.secondary_clicked() {
+                crate::overlay::request_copy_menu(ui.ctx(), crate::overlay::CopyReq { pos: row.interact_pointer_pos().unwrap_or(rr.center()), line: l.text.clone(), hunk: hunk_text(h), file: fv.path.clone(), sel: selected_text_of(r, fv) });
+            }
+            let bg = match l.kind {
                 LineKind::Add => p.diff_add,
                 LineKind::Del => p.diff_del,
                 LineKind::Ctx => Color32::TRANSPARENT,
@@ -807,4 +814,44 @@ fn diff_view(app: &App, ui: &mut Ui, fv: &FileView, acts: &mut Vec<Act>) {
             }
         }
     });
+}
+
+/// A hunk as unified-diff text (header plus +/-/space prefixed lines).
+pub fn hunk_text(h: &crate::diff::Hunk) -> String {
+    let mut out = format!("@@ -{},{} +{},{} @@", h.old_start, h.old_lines, h.new_start, h.new_lines);
+    if !h.section.is_empty() {
+        out.push(' ');
+        out.push_str(&h.section);
+    }
+    out.push('\n');
+    for l in &h.lines {
+        out.push(match l.kind {
+            LineKind::Add => '+',
+            LineKind::Del => '-',
+            LineKind::Ctx => ' ',
+        });
+        out.push_str(&l.text);
+        out.push('\n');
+    }
+    out
+}
+
+fn selected_text_of(r: &Repo, fv: &FileView) -> String {
+    let mut keys: Vec<&(bool, usize, usize)> = r.line_sel.iter().collect();
+    keys.sort();
+    keys.iter()
+        .filter_map(|(staged, hunk, line)| {
+            let h = if *staged { fv.staged.hunks.get(*hunk) } else { fv.unstaged.hunks.get(*hunk) }?;
+            h.lines.get(*line).map(|l| l.text.clone())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Lines ticked in the diff, as plain text (empty when nothing is selected).
+pub fn selected_text(app: &App) -> String {
+    match app.repo.as_ref().and_then(|r| r.file_view.as_ref().map(|fv| (r, fv))) {
+        Some((r, fv)) => selected_text_of(r, fv),
+        None => String::new(),
+    }
 }
