@@ -142,6 +142,8 @@ pub enum Cmd {
     UndoTo(usize),
     PublishRepo,
     CopyText(String),
+    PullThenPush,
+    SignIn,
 }
 
 impl Cmd {
@@ -196,6 +198,8 @@ impl Cmd {
             Cmd::Redo => "Yinele".into(),
             Cmd::PublishRepo => "Depoyu GitHub'da yayınla".into(),
             Cmd::CopyText(_) => "Kopyala".into(),
+            Cmd::PullThenPush => "Önce pull, sonra push".into(),
+            Cmd::SignIn => "GitHub'a giriş yap".into(),
             Cmd::UndoTo(_) => "Bu noktaya dön".into(),
             Cmd::CopyPath(f) => format!("Yolu kopyala: {f}"),
         }
@@ -498,6 +502,7 @@ pub enum Modal {
     Login,
     FromCommit { sha: String, name: String, tag: bool },
     Publish { name: String, desc: String, private: bool, acc: String },
+    PushRejected,
 }
 
 pub struct MenuItem {
@@ -530,6 +535,7 @@ pub struct App {
     pub redo: Vec<(String, RedoSnap)>,
     pub sync_text: String,
     pub sync_label: Option<&'static str>,
+    pub push_after_pull: bool,
     pub busy: u32,
     pub git_user: (String, String),
     pub git_version: String,
@@ -578,6 +584,7 @@ impl App {
             redo: vec![],
             sync_text: String::new(),
             sync_label: None,
+            push_after_pull: false,
             busy: 0,
             git_user: (String::new(), String::new()),
             git_version: String::new(),
@@ -648,6 +655,27 @@ impl App {
 
     pub fn toast(&mut self, kind: ToastKind, text: impl Into<String>) {
         self.toasts.push(Toast { text: text.into(), kind, at: Instant::now(), action: None });
+        if self.toasts.len() > 4 {
+            self.toasts.remove(0);
+        }
+    }
+
+    /// Shows a git/network error. Well-known failures get a plain explanation and a way out.
+    pub fn toast_error(&mut self, e: String) {
+        let low = e.to_lowercase();
+        if low.contains("authentication failed") || low.contains("could not read username") || low.contains("401") || low.contains("invalid credentials") || low.contains("terminal prompts disabled") {
+            self.toasts.push(Toast { text: "GitHub girişi geçersiz ya da süresi dolmuş. Yeniden giriş yap.".into(), kind: ToastKind::Err, at: Instant::now(), action: Some(("Giriş yap".into(), Cmd::SignIn)) });
+        } else if low.contains("could not resolve host") || low.contains("unable to access") && low.contains("connect") || low.contains("network is unreachable") {
+            self.toast(ToastKind::Err, "Sunucuya ulaşılamadı. İnternet bağlantını kontrol et.");
+        } else if low.contains("repository not found") || low.contains("404") && low.contains("github") {
+            self.toast(ToastKind::Err, "Depo bulunamadı ya da bu hesabın erişimi yok. Doğru hesapla giriş yaptığından emin ol.");
+        } else if low.contains("permission to") && low.contains("denied") || low.contains("error: 403") {
+            self.toasts.push(Toast { text: "Bu GitHub hesabının bu depoya yazma izni yok. Depo sahibi hesapla giriş yaptığından emin ol.".into(), kind: ToastKind::Err, at: Instant::now(), action: Some(("Hesaplar".into(), Cmd::Settings)) });
+        } else if low.contains("would be overwritten by checkout") || low.contains("please commit your changes or stash") {
+            self.toast(ToastKind::Err, "Kaydedilmemiş değişikliklerin bu işlemle çakışıyor. Önce commit et ya da stash'le.");
+        } else {
+            self.toast(ToastKind::Err, e);
+        }
         if self.toasts.len() > 4 {
             self.toasts.remove(0);
         }
@@ -737,7 +765,14 @@ impl App {
         self.repo.as_ref().map(|r| r.path.clone())
     }
 
+    /// Account used for network operations: the one that owns the open repository's GitHub remote,
+    /// otherwise the active account.
     pub fn account_key(&self) -> Option<String> {
+        if let Some((owner, _)) = self.repo.as_ref().and_then(|r| r.gh.as_ref()) {
+            if let Some(a) = self.s.accounts.iter().find(|a| a.login.eq_ignore_ascii_case(owner)) {
+                return Some(a.key.clone());
+            }
+        }
         self.s.account.as_ref().map(|a| a.key.clone())
     }
 
@@ -1377,7 +1412,7 @@ impl App {
                         app.toast(ToastKind::Ok, "Fetch tamamlandı");
                         app.refresh_all();
                     }
-                    Err(e) => app.toast(ToastKind::Err, e),
+                    Err(e) => app.toast_error(e),
                 }
             },
         );
@@ -1399,15 +1434,23 @@ impl App {
                 app.sync_label = None;
                 match r {
                     Ok(res) if res.conflict => {
-                        app.toast(ToastKind::Err, "Pull: çatışmalar var");
+                        app.push_after_pull = false;
+                        app.toast(ToastKind::Err, "Pull: çatışmalar var. Çöz, commit et, sonra tekrar Push yap.");
                         app.refresh_all();
                     }
                     Ok(_) => {
                         app.log_op("Pull origin", "git pull", prev.map(Undo::ResetHard).unwrap_or(Undo::None("")));
-                        app.toast_undo("Pull tamamlandı");
                         app.refresh_all();
+                        if std::mem::take(&mut app.push_after_pull) {
+                            app.push(false);
+                        } else {
+                            app.toast_undo("Pull tamamlandı");
+                        }
                     }
-                    Err(e) => app.toast(ToastKind::Err, e),
+                    Err(e) => {
+                        app.push_after_pull = false;
+                        app.toast_error(e);
+                    }
                 }
             },
         );
@@ -1446,7 +1489,14 @@ impl App {
                         app.toast(ToastKind::Ok, "Değişiklikler gönderildi");
                         app.refresh_all();
                     }
-                    Err(e) => app.toast(ToastKind::Err, e),
+                    Err(e) => {
+                        let low = e.to_lowercase();
+                        if low.contains("fetch first") || low.contains("non-fast-forward") || low.contains("[rejected]") || low.contains("updates were rejected") {
+                            app.modal = Some(Modal::PushRejected);
+                        } else {
+                            app.toast_error(e);
+                        }
+                    }
                 }
             },
         );
@@ -2037,6 +2087,11 @@ impl App {
             Cmd::OpenRecent(p) => self.open_repo(p),
             Cmd::CommitOp(k, sha) => self.commit_op(&k, sha),
             Cmd::Redo => self.redo(),
+            Cmd::PullThenPush => {
+                self.push_after_pull = true;
+                self.pull();
+            }
+            Cmd::SignIn => crate::screens::welcome::login_start(self),
             Cmd::PublishRepo => {
                 if self.s.account.is_none() {
                     self.toast(ToastKind::Info, "Önce GitHub'a giriş yap");

@@ -309,6 +309,35 @@ pub fn show_modal(app: &mut App, ctx: &egui::Context) {
                 keep = false;
             }
         }
+        Modal::PushRejected => {
+            let mut choice: u8 = 0;
+            let (_, close) = dialog(app, ctx, "push-rejected", 480.0, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                ui.label(crate::i18n::rt("Push reddedildi").font(FontId::new(16.0, semibold())).color(app.th.p.text1));
+                ui.label(crate::i18n::rt("GitHub'daki dalda sende olmayan commit'ler var (başka yerden ya da web'den eklenmiş). Önce onları alıp birleştirmen gerekiyor; sonra gönderebilirsin.").font(app.th.f(Ty::Row)).color(app.th.p.text2));
+                ui.add_space(6.0);
+                if button(ui, &app.th, Btn::new("Pull yap, sonra tekrar Push").primary().height(36.0).min_w(ui.available_width())).clicked() {
+                    choice = 1;
+                }
+                if button(ui, &app.th, Btn::new("Uzaktaki değişiklikleri ez (force push)").danger().height(36.0).min_w(ui.available_width())).clicked() {
+                    choice = 2;
+                }
+                ui.label(crate::i18n::rt("Force push, GitHub'daki o commit'leri siler. Emin değilsen Pull'u seç.").font(app.th.f(Ty::Small)).color(app.th.p.text3));
+                ui.add_space(2.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if button(ui, &app.th, Btn::new("Vazgeç").ghost()).clicked() {
+                        choice = 3;
+                    }
+                });
+            });
+            keep = false;
+            match choice {
+                1 => app.run(Cmd::PullThenPush),
+                2 => app.run(Cmd::ForcePush),
+                0 if !close => keep = true,
+                _ => {}
+            }
+        }
         Modal::Login => {
             keep = crate::screens::welcome::login_modal(app, ctx);
         }
